@@ -1,0 +1,96 @@
+main {
+    border: 2px solid black;
+    padding: 15px; /* Adds space between the text and the border */
+    margin: 10px;  /* Adds space around the outside of the border */
+    background-color: rgb(186, 214, 239);
+    font-family: 'Courier New', Courier, monospace;
+}
+
+.center{
+    text-align: center;
+}
+
+.page-header{
+  background-image: url("../html/snowboard.jpg"); /* adjust path if needed */
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+
+  padding: 60px 20px;
+  margin-bottom: 30px;
+
+  text-align: center;
+  color: #0f172a;
+
+  border-radius: 12px;
+  position: relative;
+}
+
+body{
+    background-image: url(sunset.webp);
+    background-size: contain;
+}
+
+.bold{
+    font-weight: bold;
+}
+
+.headline{
+    font-size: 50px;
+    color: #122c69;
+}
+
+.pictureb{
+    border: 2px black;
+    padding: 5px;
+}
+
+.boarderimg{
+  display: block;          /* important */
+  margin: 16px auto;       /* centers it */
+  height: 250px;           /* your height */
+  max-width: 90%;
+  object-fit: cover;
+  border-radius: 14px;
+  border: 2px black;
+  padding: 5px;
+}
+
+.video{
+  display: block;
+  margin: 40px auto;
+}
+
+.aboutbox {
+  border: 2px solid black;
+  padding: 16px;
+  margin: 20px 0;
+  border-radius: 8px;
+}
+
+a:link{
+    color: rgb(72, 40, 105);
+}
+
+.underline{
+    text-decoration: underline;
+}
+
+.blue{
+    color: #122c69;
+}
+
+.right{
+    text-align: right;
+}
+
+.white{
+    color: white;
+}
+
+a:active{
+    color: black;
+}
+
+
+

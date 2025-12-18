@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Snow Dune</title>
+  <style>
+    html, body { margin:0; height:100%; background:#071422; overflow:hidden; }
+    canvas { display:block; width:100vw; height:100vh; }
+
+    /* Optional: little help text (non-intrusive) */
+    .hint{
+      position: fixed;
+      left: 16px;
+      bottom: 14px;
+      color: rgba(255,255,255,0.75);
+      font: 14px/1.35 system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      user-select:none;
+      pointer-events:none;
+      text-shadow: 0 2px 12px rgba(0,0,0,0.55);
+    }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">
+  Hold mouse / trackpad press to tuck (gain speed downhill).<br>
+  Let go to float. Pressing into an uphill at speed = crash.
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d");
+
+  // ----- HiDPI resize
+  function resize(){
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    canvas.width = Math.floor(window.innerWidth * dpr);
+    canvas.height = Math.floor(window.innerHeight * dpr);
+    canvas.style.width = window.innerWidth + "px";
+    canvas.style.height = window.innerHeight + "px";
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  // ----- Input
+  let pressing = false;
+  window.addEventListener("mousedown", () => pressing = true);
+  window.addEventListener("mouseup",   () => pressing = false);
+  window.addEventListener("touchstart", (e)=>{ pressing=true; e.preventDefault(); }, {passive:false});
+  window.addEventListener("touchend",   ()=> pressing=false);
+
+  // ----- World / terrain settings (wider hills)
+  const terrain = {
+    baseYFrac: 0.70,
+    amp: 110,          // hill height
+    wavelength: 720,   // bigger = wider hills (KEY)
+    rough: 0.18,       // subtle variation
+    speedScroll: 0,    // how far world moved
+  };
+
+  // Height function for terrain at world X
+  function groundY(worldX){
+    const h = window.innerHeight;
+    const baseY = h * terrain.baseYFrac;
+
+    const w = terrain.wavelength;
+    const a = terrain.amp;
+
+    // Layered sin waves for "natural" hills
+    const s1 = Math.sin(worldX / w * Math.PI * 2);
+    const s2 = Math.sin(worldX / (w*0.55) * Math.PI * 2 + 1.4) * terrain.rough;
+    const s3 = Math.sin(worldX / (w*1.9) * Math.PI * 2 - 0.8) * (terrain.rough * 0.6);
+
+    return baseY + a * (s1 + s2 + s3);
+  }
+
+  // Derivative (slope) via numerical difference
+  function groundSlope(worldX){
+    const dx = 2.0;
+    return (groundY(worldX + dx) - groundY(worldX - dx)) / (2*dx);
+  }
+
+  // ----- Player
+  const player = {
+    x: 180,             // screen x (player stays mostly fixed)
+    y: 0,
+    r: 14,
+    vy: 0,              // vertical velocity
+    speed: 260,         // horizontal speed through world (px/s)
+    grounded: true,
+  };
+
+  // Initial placement
+  function reset(runKeepBest=false){
+    terrain.speedScroll = 0;
+    player.speed = 260;
+    player.vy = 0;
+    player.grounded = true;
+    score = 0;
+    if(!runKeepBest) best = 0;
+    spawnSnowflakes(true);
+  }
+
+  // ----- Snowflakes (collectibles)
+  let snowflakes = [];
+  const FLAKE_VALUE = 100;
+
+  function spawnSnowflakes(force=false){
+    // Maintain a field ahead of player. Wider spacing; reachable heights.
+    const viewW = window.innerWidth;
+    const startX = terrain.speedScroll + viewW * 0.8;
+    const endX   = terrain.speedScroll + viewW * 3.0;
+
+    if(force) snowflakes = [];
+
+    // If we already have enough, don't overspawn
+    if(!force && snowflakes.length > 35) return;
+
+    let count = force ? 28 : 10;
+
+    for(let i=0;i<count;i++){
+      const wx = startX + Math.random() * (endX - startX);
+      const gy = groundY(wx);
+
+      // Keep within reach: not too high; biased to near hills/crests
+      const heightAbove = 90 + Math.random()*170; // 90..260
+      const wy = gy - heightAbove;
+
+      snowflakes.push({
+        wx, wy,
+        r: 10,
+        drift: (Math.random()*2 - 1) * 0.3,
+        bob: Math.random()*Math.PI*2,
+        collected:false,
+      });
+    }
+  }
+
+  // ----- Score / crash
+  let score = 0;
+  let best  = 0;
+
+  function crash(){
+    // quick reset but keep best score
+    best = Math.max(best, score);
+    // small pause effect
+    flash = 1.0;
+    score = 0;
+    player.speed = 260;
+    player.vy = 0;
+    player.grounded = true;
+    // don't hard-reset terrain; feels smoother to restart the run
+    terrain.speedScroll = 0;
+    spawnSnowflakes(true);
+  }
+
+  // ----- Visuals
+  let flash = 0;
+
+  function drawBackground(){
+    const w = window.innerWidth, h = window.innerHeight;
+
+    // "Beachy but professional" winter sky: deep-to-soft gradient + vignette
+    const g = ctx.createLinearGradient(0,0,0,h);
+    g.addColorStop(0, "#061826");
+    g.addColorStop(0.55, "#0b2a3f");
+    g.addColorStop(1, "#0a2030");
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,w,h);
+
+    // Soft glow near horizon
+    const glow = ctx.createRadialGradient(w*0.55, h*0.55, 40, w*0.55, h*0.55, h*0.9);
+    glow.addColorStop(0, "rgba(120,210,230,0.10)");
+    glow.addColorStop(0.55, "rgba(120,210,230,0.05)");
+    glow.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = glow;
+    ctx.fillRect(0,0,w,h);
+
+    // Stronger vignette (more defined edges, less “undefined”)
+    const v = ctx.createRadialGradient(w*0.5, h*0.45, h*0.10, w*0.5, h*0.45, h*0.95);
+    v.addColorStop(0, "rgba(0,0,0,0)");
+    v.addColorStop(0.62, "rgba(0,0,0,0.25)");
+    v.addColorStop(1, "rgba(0,0,0,0.60)");
+    ctx.fillStyle = v;
+    ctx.fillRect(0,0,w,h);
+  }
+
+  function drawTerrain(){
+    const w = window.innerWidth, h = window.innerHeight;
+
+    // Snow surface
+    ctx.beginPath();
+    ctx.moveTo(0, h);
+    const step = 10;
+    for(let sx=0; sx<=w; sx+=step){
+      const wx = terrain.speedScroll + sx;
+      const y = groundY(wx);
+      ctx.lineTo(sx, y);
+    }
+    ctx.lineTo(w, h);
+    ctx.closePath();
+
+    // snow gradient
+    const gy = ctx.createLinearGradient(0, h*0.45, 0, h);
+    gy.addColorStop(0, "rgba(255,255,255,0.96)");
+    gy.addColorStop(1, "rgba(215,240,248,0.96)");
+    ctx.fillStyle = gy;
+    ctx.fill();
+
+    // subtle edge line
+    ctx.strokeStyle = "rgba(255,255,255,0.55)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  function drawSnowflakes(t){
+    for(const f of snowflakes){
+      if(f.collected) continue;
+      const sx = f.wx - terrain.speedScroll;
+      const sy = f.wy + Math.sin(t*0.002 + f.bob)*6;
+
+      // Cull behind camera
+      if(sx < -80 || sx > window.innerWidth + 120) continue;
+
+      // flake
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.rotate(Math.sin(t*0.001 + f.bob)*0.25);
+
+      ctx.strokeStyle = "rgba(235,252,255,0.95)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for(let i=0;i<6;i++){
+        const ang = i*Math.PI/3;
+        ctx.moveTo(0,0);
+        ctx.lineTo(Math.cos(ang)*f.r, Math.sin(ang)*f.r);
+        // small branches
+        ctx.moveTo(Math.cos(ang)*f.r*0.55, Math.sin(ang)*f.r*0.55);
+        ctx.lineTo(Math.cos(ang+0.45)*f.r*0.30, Math.sin(ang+0.45)*f.r*0.30);
+        ctx.moveTo(Math.cos(ang)*f.r*0.55, Math.sin(ang)*f.r*0.55);
+        ctx.lineTo(Math.cos(ang-0.45)*f.r*0.30, Math.sin(ang-0.45)*f.r*0.30);
+      }
+      ctx.stroke();
+
+      ctx.restore();
+    }
+  }
+
+  function drawHUD(){
+    const w = window.innerWidth;
+
+    // Top center score
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+
+    ctx.font = "700 18px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.fillText(`Score: ${score}`, w/2, 16);
+
+    ctx.font = "600 13px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+    ctx.fillStyle = "rgba(255,255,255,0.70)";
+    ctx.fillText(`Best: ${best}`, w/2, 40);
+
+    ctx.restore();
+  }
+
+  function drawPlayer(){
+    // Simple rider: head + board + scarf line
+    ctx.save();
+    ctx.translate(player.x, player.y);
+
+    // Board
+    ctx.strokeStyle = "rgba(10, 35, 55, 0.90)";
+    ctx.lineWidth = 4;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(-18, 10);
+    ctx.quadraticCurveTo(0, 18, 20, 10);
+    ctx.stroke();
+
+    // Body
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.beginPath();
+    ctx.arc(0, -2, 10, 0, Math.PI*2);
+    ctx.fill();
+
+    // Head
+    ctx.fillStyle = "rgba(235,252,255,0.95)";
+    ctx.beginPath();
+    ctx.arc(0, -18, 6, 0, Math.PI*2);
+    ctx.fill();
+
+    // Scarf (shows pressing)
+    ctx.strokeStyle = pressing ? "rgba(140, 220, 235, 0.95)" : "rgba(255,255,255,0.55)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(6, -16);
+    ctx.quadraticCurveTo(18, -10, 18, 0);
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  // ----- Physics / update
+  const GRAV = 1200;          // gravity (px/s^2) (stronger for airtime feel)
+  const DRAG = 0.10;          // mild drag
+  const MIN_SPEED = 180;
+  const MAX_SPEED = 1200;     // let it rip
+
+  // Gradual speed gain: downhill acceleration feels good, not instant
+  const DOWNHILL_GAIN = 420;  // base downhill accel
+  const TUCK_BOOST   = 620;   // extra when pressing downhill (tucking)
+
+  // Crash tuning
+  const CRASH_SPEED = 520;    // crash if pressing into uphill while going this fast+
+  const UPHILL_SLOPE = 0.25;  // how steep is “uphill enough”
+
+  function update(dt, t){
+    const w = window.innerWidth;
+
+    // Move the world left based on speed
+    terrain.speedScroll += player.speed * dt;
+
+    // Terrain under player
+    const worldX = terrain.speedScroll + player.x;
+    const gy = groundY(worldX);
+    const slope = groundSlope(worldX);
+
+    // Slope angle trig helpers
+    const angle = Math.atan(slope);
+    const sinA = Math.sin(angle);
+    const cosA = Math.cos(angle);
+
+    // If grounded, keep player on surface
+    if(player.grounded){
+      // stick to ground
+      player.y = gy - player.r;
+      // match vertical velocity to surface trend
+      const vySurface = slope * player.speed;
+      player.vy = vySurface;
+
+      // --- Speed changes
+      // Gravity component along slope: downhill (negative slope) accelerates
+      // Using -sin(angle) (downhill is negative angle => -sin(angle) positive)
+      const downhillFactor = Math.max(0, -sinA);
+
+      // Natural downhill acceleration
+      player.speed += DOWNHILL_GAIN * downhillFactor * dt;
+
+      // Extra when pressing (tucking) — ONLY helps on downhill
+      if(pressing){
+        player.speed += TUCK_BOOST * downhillFactor * dt;
+      }
+
+      // Uphill slows you gently
+      const uphillFactor = Math.max(0, sinA);
+      player.speed -= 520 * uphillFactor * dt;
+
+      // Drag so it doesn't become infinite
+      player.speed -= player.speed * DRAG * dt;
+
+      // Clamp
+      player.speed = Math.max(MIN_SPEED, Math.min(MAX_SPEED, player.speed));
+
+      // --- Crash check:
+      // If you're pressing and you hit a notable uphill at speed, wipe out.
+      if(pressing && slope > UPHILL_SLOPE && player.speed > CRASH_SPEED){
+        crash();
+        return;
+      }
+
+      // --- Airtime / launch:
+      // If the ground drops away fast (crest), let the rider detach.
+      // We approximate by looking slightly ahead: if surface is suddenly lower,
+      // you become airborne with your current vertical velocity.
+      const ahead = 22;
+      const gyAhead = groundY(worldX + ahead);
+      const currentSurfaceY = gy;
+      const drop = (gyAhead - currentSurfaceY); // positive means rising, negative means dropping
+      // If dropping away and you're moving fast enough, detach.
+      if(drop < -10 && player.speed > 420){
+        player.grounded = false;
+        // keep the current vy; add a small "pop" based on speed + crest sharpness
+        player.vy = (slope * player.speed) - Math.min(260, player.speed * 0.22);
+      }
+    } else {
+      // Air physics
+      player.vy += GRAV * dt;
+      player.y += player.vy * dt;
+
+      // slight air drag (don’t kill speed too much)
+      player.speed -= player.speed * (DRAG * 0.25) * dt;
+      player.speed = Math.max(MIN_SPEED, Math.min(MAX_SPEED, player.speed));
+
+      // Land when hitting terrain
+      if(player.y + player.r >= gy){
+        player.grounded = true;
+        player.y = gy - player.r;
+
+        // On hard landings while pressing into uphill: also crash
+        const landSlope = slope;
+        if(pressing && landSlope > UPHILL_SLOPE && player.speed > CRASH_SPEED){
+          crash();
+          return;
+        }
+      }
+    }
+
+    // Spawn more snowflakes as we move
+    spawnSnowflakes(false);
+
+    // Collect snowflakes
+    const px = terrain.speedScroll + player.x;
+    const py = player.y;
+    for(const f of snowflakes){
+      if(f.collected) continue;
+      // Slight drift
+      f.wx += f.drift;
+      const sx = f.wx;
+      const sy = f.wy + Math.sin(t*0.002 + f.bob)*6;
+
+      const dx = (sx - px);
+      const dy = (sy - py);
+      const dist2 = dx*dx + dy*dy;
+      const rr = (player.r + f.r) * (player.r + f.r);
+
+      if(dist2 < rr){
+        f.collected = true;
+        score += FLAKE_VALUE;
+      }
+    }
+
+    // Clean up old flakes behind camera
+    const killX = terrain.speedScroll - 300;
+    snowflakes = snowflakes.filter(f => f.wx > killX && !f.collected);
+  }
+
+  // ----- Loop
+  let last = performance.now();
+  function frame(t){
+    const now = t;
+    const dt = Math.min(0.033, (now - last) / 1000);
+    last = now;
+
+    update(dt, t);
+
+    // Draw
+    drawBackground();
+    drawTerrain();
+    drawSnowflakes(t);
+    drawPlayer();
+    drawHUD();
+
+    // Crash flash overlay
+    if(flash > 0){
+      ctx.fillStyle = `rgba(255,255,255,${0.22*flash})`;
+      ctx.fillRect(0,0,window.innerWidth,window.innerHeight);
+      flash = Math.max(0, flash - dt*2.2);
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  // Start
+  reset(true);
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
